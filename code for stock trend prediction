@@ -1,0 +1,147 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sb
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, pair_confusion_matrix
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
+from keras.models import Sequential
+from keras.layers import LSTM, Dense
+
+# Load the dataset
+df = pd.read_csv('C:/Users/HP/Downloads/Stock_trend.csv')
+
+# Convert date column to datetime
+df['Date'] = pd.to_datetime(df['Date'])
+
+# Set date as index
+df.set_index('Date', inplace=True)
+
+# Resample data to monthly frequency
+df_monthly = df.resample('ME').mean()
+
+# Calculate daily returns
+df_monthly['Returns'] = df_monthly['Closing Volume'].pct_change()
+
+# Create a new column to indicate up or down trend
+df_monthly['Trend'] = np.where(df_monthly['Returns'] > 0, 1, 0)
+
+# Drop rows with NaN values
+df_monthly.dropna(inplace=True)
+
+# Split data into features and target
+features = df_monthly.drop(['Trend', 'Returns'], axis=1)
+target = df_monthly['Trend']
+
+# Scale the features
+scaler = StandardScaler()
+features_scaled = scaler.fit_transform(features)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(features_scaled, target, test_size=0.2, random_state=42)
+
+# Define a function to evaluate models
+def evaluate_model(model, X_train, X_test, y_train, y_test):
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print("Accuracy:", accuracy)
+    print("Classification Report:")
+    print(classification_report(y_test, y_pred))
+    print("Confusion Matrix:")
+    cm = confusion_matrix(y_test, y_pred)
+    print(cm)
+    return accuracy, cm
+
+# Random Forest Classifier with Grid Search
+rf = RandomForestClassifier(random_state=42)
+rf_params = {
+    'n_estimators': [100, 200],
+    'max_depth': [10, 20],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2]
+}
+rf_grid = GridSearchCV(rf, rf_params, cv=3, n_jobs=-1, verbose=2)
+rf_grid.fit(X_train, y_train)
+best_rf = rf_grid.best_estimator_
+rf_accuracy, rf_cm = evaluate_model(best_rf, X_train, X_test, y_train, y_test)
+
+# Logistic Regression with Grid Search
+lr = LogisticRegression()
+lr_params = {
+    'C': [0.01, 0.1, 1, 10],
+    'solver': ['liblinear', 'saga']
+}
+lr_grid = GridSearchCV(lr, lr_params, cv=3, n_jobs=-1, verbose=2)
+lr_grid.fit(X_train, y_train)
+best_lr = lr_grid.best_estimator_
+lr_accuracy, lr_cm = evaluate_model(best_lr, X_train, X_test, y_train, y_test)
+
+# XGBoost Classifier with Grid Search
+xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+xgb_params = {
+    'n_estimators': [100, 200],
+    'learning_rate': [0.01, 0.1],
+    'max_depth': [3, 5]
+}
+xgb_grid = GridSearchCV(xgb, xgb_params, cv=3, n_jobs=-1, verbose=2)
+xgb_grid.fit(X_train, y_train)
+best_xgb = xgb_grid.best_estimator_
+xgb_accuracy, xgb_cm = evaluate_model(best_xgb, X_train, X_test, y_train, y_test)
+
+# Ensemble of best models
+ensemble = VotingClassifier(estimators=[
+    ('rf', best_rf), ('lr', best_lr), ('xgb', best_xgb)],
+    voting='soft')
+ensemble_accuracy, ensemble_cm = evaluate_model(ensemble, X_train, X_test, y_train, y_test)
+
+# LSTM Model
+X_train_lstm = X_train.reshape(-1, 1, features_scaled.shape[1])
+X_test_lstm = X_test.reshape(-1, 1, features_scaled.shape[1])
+model = Sequential()
+model.add(LSTM(units=50, return_sequences=True, input_shape=(1, features_scaled.shape[1])))
+model.add(LSTM(units=50))
+model.add(Dense(1, activation='sigmoid'))
+model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+model.fit(X_train_lstm, y_train, epochs=100, batch_size=32, validation_data=(X_test_lstm, y_test))
+
+# Evaluate LSTM
+y_pred_lstm = model.predict(X_test_lstm)
+y_pred_lstm = (y_pred_lstm > 0.5).astype(int)
+lstm_accuracy = accuracy_score(y_test, y_pred_lstm)
+print("LSTM Accuracy:", lstm_accuracy)
+print("LSTM Classification Report:")
+print(classification_report(y_test, y_pred_lstm))
+print("LSTM Confusion Matrix:")
+lstm_cm = confusion_matrix(y_test, y_pred_lstm)
+print(lstm_cm)
+
+# Plot the accuracies
+accuracies = [rf_accuracy, lr_accuracy, xgb_accuracy, ensemble_accuracy, lstm_accuracy]
+models = ['Random Forest', 'Logistic Regression', 'XGBoost', 'Ensemble', 'LSTM']
+
+plt.figure(figsize=(10, 5))
+plt.bar(models, accuracies, color=['blue', 'green', 'red', 'purple', 'orange'])
+plt.xlabel('Models')
+plt.ylabel('Accuracy')
+plt.title('Model Accuracies')
+plt.show()
+
+# Plot the confusion matrices
+fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+axes = axes.flatten()
+
+confusion_matrices = [rf_cm, lr_cm, xgb_cm, ensemble_cm, lstm_cm]
+titles = ['Random Forest', 'Logistic Regression', 'XGBoost', 'Ensemble', 'LSTM']
+
+for i, ax in enumerate(axes[:5]):
+    sb.heatmap(confusion_matrices[i], annot=True, fmt='d', ax=ax, cmap='Blues')
+    ax.set_title(titles[i])
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('Actual')
+
+plt.tight_layout()
+plt.show()
